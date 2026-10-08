@@ -50,6 +50,23 @@ public final class VisionFilter {
           kRejected);
     }
 
+    // The robot is on the carpet. A solve that puts it well above or below
+    // the floor is a bad solve - or a wrong robotToCamera height or pitch -
+    // and its x/y are no more trustworthy than its z.
+    if (Math.abs(estimatedPose.getZ()) > VisionConstants.kMaxPoseZMeters) {
+      return new Decision(false,
+          String.format("z %.2fm off floor (limit %.2fm)",
+              estimatedPose.getZ(), VisionConstants.kMaxPoseZMeters),
+          kRejected);
+    }
+
+    if (tagCount == 1 && avgTagDistanceMeters > VisionConstants.kMaxSingleTagDistanceMeters) {
+      return new Decision(false,
+          String.format("single tag %.2fm away > %.2fm",
+              avgTagDistanceMeters, VisionConstants.kMaxSingleTagDistanceMeters),
+          kRejected);
+    }
+
     // Bounds are only meaningful in the OFFICIAL field frame, whose origin is a
     // field corner. The practice layout's origin is wherever the robot happened
     // to be parked for the mapping session - tags and robot poses behind or to
@@ -91,7 +108,13 @@ public final class VisionFilter {
     double d = Math.max(avgTagDistanceMeters, 0.1);
     double xyStdDev = base * d * d;
 
-    return new Decision(true, "accepted",
-        VecBuilder.fill(xyStdDev, xyStdDev, VisionConstants.kThetaStdDevRadians));
+    // Heading: 2+ tags pin it geometrically, so trust it (less with distance).
+    // A single tag's yaw is the noisiest part of its solve - leave heading to
+    // the gyro. See the constants for why the single-tag value is not scaled.
+    double thetaStdDev = tagCount > 1
+        ? VisionConstants.kMultiTagThetaStdDevRadians * d * d
+        : VisionConstants.kSingleTagThetaStdDevRadians;
+
+    return new Decision(true, "accepted", VecBuilder.fill(xyStdDev, xyStdDev, thetaStdDev));
   }
 }

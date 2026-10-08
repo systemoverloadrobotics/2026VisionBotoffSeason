@@ -30,7 +30,7 @@ public class RobotContainer {
     private final VisionSubsystem vision = new VisionSubsystem(drivetrain);
     private final CommandXboxController driverController = new CommandXboxController(0);
 
-    /** Which tag the aiming commands target. Cycled with the D-pad; defaults to 16. */
+    /** Which tag the aiming commands target. Cycled with the D-pad; defaults to 2. */
     private int selectedTagId = AimConstants.kDefaultTargetTagId;
 
 
@@ -80,10 +80,10 @@ public class RobotContainer {
         // HEADING (Phoenix's JNI_SeedFieldCentric - "Resets the rotation of the
         // robot pose"), not its full pose. Vision is what establishes the field
         // frame here; re-seeding heading after that would fabricate a heading
-        // disagreeing with the fused translation, and vision could not correct
-        // it afterward - kThetaStdDevRadians is 0.5 rad (~29 degrees), so
-        // heading corrections from vision are nearly weightless against a bad
-        // seed. Per the design (spec Sec3.1), a pose reset appears in exactly
+        // disagreeing with the fused translation. Only multi-tag solves correct
+        // heading (single-tag heading std dev is kSingleTagThetaStdDevRadians,
+        // effectively ignored), so with one tag in view - or none - a bad seed
+        // would stand uncorrected. Per the design (spec Sec3.1), a pose reset appears in exactly
         // one place - the layout-mapping utility - not here.
 
         // Back - one-shot print of everything needed to hand-verify localization
@@ -93,10 +93,12 @@ public class RobotContainer {
             var pose = drivetrain.getRobotPose();
             System.out.printf(
                 "Pose: (%.3f, %.3f) heading=%.1fdeg  yawRate=%.2fdeg/s  "
-                    + "visionHealthy=%s  visibleTags=%s  selectedTag=%d  targetInLayout=%s%n",
+                    + "cameras[%s]  sinceVision=%.2fs  visibleTags=%s  selectedTag=%d  "
+                    + "targetInLayout=%s%n",
                 pose.getX(), pose.getY(), pose.getRotation().getDegrees(),
                 drivetrain.getYawRateDegPerSec(),
-                vision.isHealthy(),
+                vision.describeCameraHealth(),
+                vision.getSecondsSinceAccepted(),
                 java.util.Arrays.toString(vision.getVisibleTagIds()),
                 selectedTagId,
                 vision.getTargetPosition(selectedTagId).isPresent());
@@ -107,14 +109,21 @@ public class RobotContainer {
         driverController.povUp().onTrue(MapVisibleTagsCommand.record(drivetrain, vision));
         driverController.povDown().onTrue(MapVisibleTagsCommand.write());
 
-        // B - rotate in place to face the selected tag.
-        driverController.b().onTrue(
+        // HOLD to act, from the XRP: releasing the button interrupts the command
+        // and stops the robot, so the driver stays in control the way they will
+        // with hold-to-shoot. The timeout still bounds a command that can never
+        // settle, and both refuse to start without recent vision.
+
+        // Same buttons as the XRP (XRP-DEMO-DRIVE): LB aims, RB drives.
+
+        // LB (hold) - rotate in place to face the selected tag.
+        driverController.leftBumper().whileTrue(
             new AimAtTagCommand(drivetrain, vision, () -> selectedTagId)
                 .withTimeout(AimConstants.kCommandTimeoutSeconds));
 
-        // X - drive to the standoff distance from the selected tag, facing it.
-        // This is the stand-in for taking a shot.
-        driverController.x().onTrue(
+        // RB (hold) - drive to the standoff distance from the selected tag, facing
+        // it. This is the stand-in for taking a shot.
+        driverController.rightBumper().whileTrue(
             new DriveToTagCommand(drivetrain, vision, () -> selectedTagId)
                 .withTimeout(AimConstants.kCommandTimeoutSeconds));
 
@@ -122,15 +131,15 @@ public class RobotContainer {
         //
         // Each returns to its own starting point so the closing error can be
         // measured against a tape mark. Run SQUARE-HOLD and SQUARE-TURNS back
-        // to back: if the held-heading square closes well and the turning one
+        // to back (X then Start): if the held-heading square closes well and the turning one
         // does not, the difference is the gyro and the rotational half of the
         // kinematics, not the modules.
         //
         // All three abort if the driver moves a stick past a deadband, so the
         // robot can be taken back without reaching for the disable button.
-        driverController.leftBumper().onTrue(
+        driverController.b().onTrue(
             DriveRoutines.outAndBack(drivetrain, this::driverWantsControl));
-        driverController.rightBumper().onTrue(
+        driverController.x().onTrue(
             DriveRoutines.squareHoldingHeading(drivetrain, this::driverWantsControl));
         driverController.start().onTrue(
             DriveRoutines.squareWithTurns(drivetrain, this::driverWantsControl));

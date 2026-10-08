@@ -40,6 +40,7 @@ public class AimAtTagCommand extends Command {
   private int m_tagId;
   private Translation2d m_target;
   private boolean m_hasTarget;
+  private boolean m_refused;
   private boolean m_settled;
   private boolean m_stalled;
   private boolean m_visionCorroborated;
@@ -63,6 +64,12 @@ public class AimAtTagCommand extends Command {
     m_hasTarget = target.isPresent();
     m_target = target.orElse(Translation2d.kZero);
 
+    // From the XRP's CHECK_VISION stage: never start moving on a pose that
+    // vision hasn't confirmed recently. Checked once, at the start - losing
+    // tags mid-run is fine, the fused pose carries on on odometry.
+    double sinceVision = m_vision.getSecondsSinceAccepted();
+    m_refused = m_hasTarget && sinceVision > AimConstants.kMaxVisionAgeToStartSeconds;
+
     m_settle.reset();
     m_watchdog.reset(Timer.getFPGATimestamp());
     m_settled = false;
@@ -78,6 +85,10 @@ public class AimAtTagCommand extends Command {
     if (!m_hasTarget) {
       System.out.printf(
           "Aim: tag %d is not in the loaded layout - nothing to aim at%n", m_tagId);
+    } else if (m_refused) {
+      System.out.printf("Aim refused - no recent vision, pose not trusted "
+          + "(last vision %.1fs ago, limit %.1fs)%n",
+          sinceVision, AimConstants.kMaxVisionAgeToStartSeconds);
     } else {
       System.out.printf("Aim: tag %d, logging to %s%n", m_tagId, m_csv.getPath());
     }
@@ -85,7 +96,7 @@ public class AimAtTagCommand extends Command {
 
   @Override
   public void execute() {
-    if (!m_hasTarget) {
+    if (!m_hasTarget || m_refused) {
       return;
     }
 
@@ -138,7 +149,7 @@ public class AimAtTagCommand extends Command {
 
   @Override
   public boolean isFinished() {
-    return !m_hasTarget || m_stalled || m_settled;
+    return !m_hasTarget || m_refused || m_stalled || m_settled;
   }
 
   @Override
@@ -149,6 +160,8 @@ public class AimAtTagCommand extends Command {
     double bestErrorDeg = Math.toDegrees(m_watchdog.bestSeen(0));
     if (!m_hasTarget) {
       System.out.println("Aim RESULT: NOT RUN - tag not in the layout");
+    } else if (m_refused) {
+      System.out.println("Aim RESULT: REFUSED - no recent vision, robot did not move");
     } else if (interrupted) {
       System.out.printf("Aim RESULT: INTERRUPTED (best error %.2fdeg)%n", bestErrorDeg);
     } else if (m_visionCorroborated) {

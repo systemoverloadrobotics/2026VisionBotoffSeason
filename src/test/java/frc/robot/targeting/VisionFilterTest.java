@@ -59,7 +59,7 @@ class VisionFilterTest {
   @Test
   void farEstimateIsTrustedLessThanCloseOne() {
     var close = VisionFilter.evaluate(poseAt(4.0, 4.0), 1, 0.0, 1.0, currentAt(4.0, 4.0), true, true);
-    var far = VisionFilter.evaluate(poseAt(4.0, 4.0), 1, 0.0, 4.0, currentAt(4.0, 4.0), true, true);
+    var far = VisionFilter.evaluate(poseAt(4.0, 4.0), 1, 0.0, 3.0, currentAt(4.0, 4.0), true, true);
     assertTrue(far.stdDevs().get(0, 0) > close.stdDevs().get(0, 0));
   }
 
@@ -103,5 +103,46 @@ class VisionFilterTest {
     var d = VisionFilter.evaluate(
         poseAt(-3.0, -2.0), 1, 0.0, 2.0, currentAt(-3.0, -2.0), false, true);
     assertFalse(d.accept());
+  }
+
+  @Test
+  void rejectsPoseFarOffTheFloor() {
+    var d = VisionFilter.evaluate(
+        new Pose3d(4.0, 4.0, 0.5, new Rotation3d()), 2, 0.0, 2.0, currentAt(4.0, 4.0), true, true);
+    assertFalse(d.accept());
+  }
+
+  @Test
+  void acceptsPoseSlightlyOffTheFloor() {
+    var d = VisionFilter.evaluate(
+        new Pose3d(4.0, 4.0, 0.05, new Rotation3d()), 2, 0.0, 2.0, currentAt(4.0, 4.0), true, true);
+    assertTrue(d.accept(), d.reason());
+  }
+
+  @Test
+  void rejectsSingleTagBeyondMaxDistance() {
+    var d = VisionFilter.evaluate(poseAt(4.0, 4.0), 1, 0.0, 6.0, currentAt(4.0, 4.0), true, true);
+    assertFalse(d.accept());
+  }
+
+  @Test
+  void multiTagHasNoDistanceLimit() {
+    var d = VisionFilter.evaluate(poseAt(4.0, 4.0), 2, 0.0, 6.0, currentAt(4.0, 4.0), true, true);
+    assertTrue(d.accept(), d.reason());
+  }
+
+  @Test
+  void multiTagHeadingIsTrustedFarMoreThanSingleTag() {
+    var single = VisionFilter.evaluate(poseAt(4.0, 4.0), 1, 0.0, 1.0, currentAt(4.0, 4.0), true, true);
+    var multi = VisionFilter.evaluate(poseAt(4.0, 4.0), 2, 0.0, 1.0, currentAt(4.0, 4.0), true, true);
+    assertTrue(multi.stdDevs().get(2, 0) * 10 < single.stdDevs().get(2, 0));
+  }
+
+  @Test
+  void closeSingleTagStillDoesNotSteerHeading() {
+    // Distance-scaling the single-tag heading std dev would make a tag 0.3 m
+    // away trusted for heading - the noisiest part of a one-tag solve.
+    var d = VisionFilter.evaluate(poseAt(4.0, 4.0), 1, 0.0, 0.3, currentAt(4.0, 4.0), true, true);
+    assertTrue(d.stdDevs().get(2, 0) >= 1.0);
   }
 }

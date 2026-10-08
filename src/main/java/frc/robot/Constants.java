@@ -31,21 +31,58 @@ public final class Constants {
     private VisionConstants() {}
 
     /**
-     * Must match the camera name in the PhotonVision web UI EXACTLY.
-     * A mismatch does not throw - PhotonCamera silently returns zero results
-     * forever, indistinguishable from "no tag in view".
+     * One camera's identity and mounting. VisionSubsystem builds one
+     * PhotonCamera + PhotonPoseEstimator per ENABLED entry in kCameras, so
+     * adding, removing, or re-mounting a camera is a constants change, not a
+     * code change. Ported from the XRP two-camera setup (XRP-DEMO-DRIVE).
+     *
+     * @param name          must match the camera name in the PhotonVision web
+     *                      UI EXACTLY. A mismatch does not throw - PhotonCamera
+     *                      silently returns zero results forever,
+     *                      indistinguishable from "no tag in view".
+     * @param robotToCamera robot center to camera lens, meters, plus the
+     *                      camera's rotation. Leaving the rotation at identity
+     *                      on a camera that is not level and forward-facing is
+     *                      a known, specifically-documented mistake.
+     * @param enabled       false = defined but never constructed, so a camera
+     *                      that isn't plugged in doesn't trip the health error
      */
-    public static final String kCameraName = "arducam_camera";
+    public record CameraConfig(String name, Transform3d robotToCamera, boolean enabled) {}
 
     /**
-     * Where the camera sits relative to robot center, in meters, plus its
-     * rotation. PLACEHOLDER - measure the real mount (translation AND
-     * rotation) before trusting any localization. Leaving the rotation at
-     * identity is a known, specifically-documented mistake.
+     * Practice bot: swerve drive and two cameras, no shooter. One camera at
+     * the front center, one at the back center, both looking straight out.
+     * Robot frame: +X forward (toward the front), +Y left, yaw CCW-positive.
+     *
+     * Same Orange Pi Plus running PhotonVision as the XRP, so the names are
+     * the XRP's ("arducam-camera-front" / "arducam-camera-back"). They must
+     * match the PhotonVision web UI exactly.
+     *
+     * Z = 12 in: from the robot builder, floor to lens center.
+     * Y = 0: both cameras are on the centerline.
+     * X = +/-13 in: ESTIMATED, not measured. The swerve modules sit at
+     *   +/-11 in (TunerConstants), so a camera on the front/back frame rail
+     *   is a little past that. Measure from robot center to each lens - an
+     *   inch here shows up directly in every pose.
+     * Pitch: assumed level. If a camera tilts up, add NEGATIVE pitch.
      */
-    public static final Transform3d kRobotToCamera = new Transform3d(
-        new Translation3d(Units.inchesToMeters(0.0), 0.0, Units.inchesToMeters(8.0)),
-        new Rotation3d());
+    public static final CameraConfig kFrontCamera = new CameraConfig(
+        "arducam-camera-front",
+        new Transform3d(
+            new Translation3d(Units.inchesToMeters(13.0), 0.0, Units.inchesToMeters(12.0)),
+            new Rotation3d()),
+        true);
+
+    /** Back center, looking backward - the 180 degree yaw is what makes it so. */
+    public static final CameraConfig kBackCamera = new CameraConfig(
+        "arducam-camera-back",
+        new Transform3d(
+            new Translation3d(Units.inchesToMeters(-13.0), 0.0, Units.inchesToMeters(12.0)),
+            new Rotation3d(0.0, 0.0, Math.PI)),
+        true);
+
+    /** Every camera the pose estimator should consider, enabled or not. */
+    public static final CameraConfig[] kCameras = {kFrontCamera, kBackCamera};
 
     /**
      * Reject single-tag solves above this pose ambiguity. 0.2 is the common
@@ -60,16 +97,51 @@ public final class Constants {
     /** Log loudly if no camera result has arrived this long after enable. */
     public static final double kCameraTimeoutSeconds = 5.0;
 
+    /**
+     * The robot sits on the carpet, so an estimate's height should be ~0. A
+     * large Z means a bad solve or a wrong robotToCamera height/pitch. Looser
+     * than the XRP's 0.10 m: FRC tags are seen from much farther away, and the
+     * camera mounts are still placeholders.
+     */
+    public static final double kMaxPoseZMeters = 0.25;
+
+    /**
+     * Single-tag estimates beyond this are rejected - one tag far away gives a
+     * jumpy pose. Multi-tag estimates have no limit; they are trusted less
+     * with distance instead. NOT tuned: the XRP used 2.0 m for a 6.5 in tag
+     * in a small room.
+     */
+    public static final double kMaxSingleTagDistanceMeters = 4.0;
+
     /** Std dev scaling. Baseline is for a single tag at 1 m; grows with distance^2. */
     public static final double kSingleTagBaseStdDevMeters = 0.20;
     public static final double kMultiTagBaseStdDevMeters = 0.05;
-    public static final double kThetaStdDevRadians = 0.5;
+
+    /**
+     * Heading std dev for a multi-tag solve, at 1 m; grows with distance^2
+     * like the xy values. 2+ tags pin heading geometrically, so this lets
+     * vision correct gyro drift.
+     */
+    public static final double kMultiTagThetaStdDevRadians = 0.1;
+
+    /**
+     * Heading std dev for a single-tag solve - large enough that the gyro
+     * effectively keeps heading. A single tag's yaw is the noisiest part of
+     * its solve. Fixed, NOT distance-scaled: scaling by distance^2 would make
+     * a close single tag trusted for heading, the case this guards against.
+     */
+    public static final double kSingleTagThetaStdDevRadians = 10.0;
   }
 
   public static final class AimConstants {
     private AimConstants() {}
 
-    public static final int kDefaultTargetTagId = 16;
+    /**
+     * Tag 2, the middle of the far wall in src/main/deploy/practice-layout.json -
+     * the XRP's drive target too. Tag 16 was the official-field default; it does
+     * not exist on the six-tag practice field.
+     */
+    public static final int kDefaultTargetTagId = 2;
 
     /** How close to stop from the tag. Stands in for shooting range. */
     public static final double kStandoffMeters = Units.inchesToMeters(36.0);
@@ -96,6 +168,16 @@ public final class Constants {
     public static final double kSettledSpeedMetersPerSec = 0.05;
 
     public static final int kSettledLoopsRequired = 5;
+
+    /**
+     * Refuse to start an aim or drive if vision hasn't been fused into the
+     * pose within this. With no recent vision the pose is odometry only - or,
+     * before the first accepted estimate, Phoenix's boot pose of (0, 0, 0deg) -
+     * and driving toward a tag from a pose nobody has checked is how the robot
+     * ends up somewhere unexpected at kMaxApproachSpeedMps. From the XRP's
+     * CHECK_VISION stage. Any tag on either camera counts, not just the target.
+     */
+    public static final double kMaxVisionAgeToStartSeconds = 1.0;
 
     /** Give up if neither distance nor heading improves within this window. */
     public static final double kStallTimeoutSeconds = 3.0;
